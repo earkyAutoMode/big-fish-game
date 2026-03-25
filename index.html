@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>大鱼吃小鱼 - 尖刺围墙版</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #0a192f;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.5);
+        }
+        canvas {
+            background: linear-gradient(180deg, #1e3a8a 0%, #172554 100%);
+            display: block;
+            border: 2px solid #3b82f6;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+        }
+        #score {
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        #overlay h1 {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #ef4444;
+        }
+        #overlay button {
+            padding: 12px 24px;
+            font-size: 18px;
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #overlay button:hover {
+            background-color: #2563eb;
+        }
+        .controls-hint {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui">
+            <div id="score">得分: 0</div>
+            <div id="high-score">最高分: 0</div>
+        </div>
+        <div id="overlay">
+            <h1 id="status-text">游戏结束</h1>
+            <p id="final-score">您的得分: 0</p>
+            <button onclick="resetGame()">重新开始</button>
+        </div>
+        <div class="controls-hint">使用鼠标或 WASD/方向键控制移动</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const highScoreElement = document.getElementById('high-score');
+        const overlay = document.getElementById('overlay');
+        const statusText = document.getElementById('status-text');
+        const finalScoreText = document.getElementById('final-score');
+
+        // 设置画布大小
+        canvas.width = 800;
+        canvas.height = 600;
+
+        const SPIKE_SIZE = 20;
+        let score = 0;
+        let highScore = localStorage.getItem('bigFishHighScore') || 0;
+        highScoreElement.innerText = `最高分: ${highScore}`;
+
+        let gameActive = true;
+        let player;
+        let npcs = [];
+        let particles = [];
+        let mouse = { x: canvas.width / 2, y: canvas.height / 2, active: false };
+        let keys = {};
+
+        // 玩家对象
+        class Player {
+            constructor() {
+                this.reset();
+            }
+            reset() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.radius = 15;
+                this.speed = 4;
+                this.color = '#fbbf24';
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                
+                // 计算朝向 (简单平滑过渡)
+                const dx = (keys['ArrowRight'] || keys['KeyD'] ? 1 : 0) - (keys['ArrowLeft'] || keys['KeyA'] ? 1 : 0);
+                const dy = (keys['ArrowDown'] || keys['KeyS'] ? 1 : 0) - (keys['ArrowUp'] || keys['KeyW'] ? 1 : 0);
+                let angle = 0;
+                if (mouse.active) {
+                    angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+                } else if (dx !== 0 || dy !== 0) {
+                    angle = Math.atan2(dy, dx);
+                }
+                ctx.rotate(angle);
+
+                // 绘制鱼身
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, this.radius * 1.5, this.radius, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 绘制尾巴
+                ctx.beginPath();
+                ctx.moveTo(-this.radius * 1.2, 0);
+                ctx.lineTo(-this.radius * 2, -this.radius);
+                ctx.lineTo(-this.radius * 2, this.radius);
+                ctx.closePath();
+                ctx.fill();
+
+                // 绘制眼睛
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(this.radius * 0.8, -this.radius * 0.3, this.radius * 0.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = 'black';
+                ctx.beginPath();
+                ctx.arc(this.radius * 0.9, -this.radius * 0.3, this.radius * 0.1, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+            update() {
+                if (!gameActive) return;
+
+                let moveX = 0;
+                let moveY = 0;
+
+                // 鼠标控制
+                if (mouse.active) {
+                    const dx = mouse.x - this.x;
+                    const dy = mouse.y - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist > 5) {
+                        moveX = (dx / dist) * this.speed;
+                        moveY = (dy / dist) * this.speed;
+                    }
+                } else {
+                    // 键盘控制
+                    if (keys['ArrowUp'] || keys['KeyW']) moveY -= this.speed;
+                    if (keys['ArrowDown'] || keys['KeyS']) moveY += this.speed;
+                    if (keys['ArrowLeft'] || keys['KeyA']) moveX -= this.speed;
+                    if (keys['ArrowRight'] || keys['KeyD']) moveX += this.speed;
+                }
+
+                this.x += moveX;
+                this.y += moveY;
+
+                // 碰撞墙壁检测 (包含尖刺)
+                if (this.x - this.radius < SPIKE_SIZE || 
+                    this.x + this.radius > canvas.width - SPIKE_SIZE ||
+                    this.y - this.radius < SPIKE_SIZE || 
+                    this.y + this.radius > canvas.height - SPIKE_SIZE) {
+                    gameOver("你撞到了尖刺！");
+                }
+            }
+            grow(amount) {
+                this.radius += amount;
+                // 随着变大，速度稍微减慢
+                this.speed = Math.max(2, 4 - (this.radius - 15) * 0.05);
+            }
+        }
+
+        // NPC 鱼对象
+        class NPC {
+            constructor() {
+                const side = Math.floor(Math.random() * 4);
+                const sizeRand = Math.random();
+                // 生成不同大小的鱼
+                if (sizeRand < 0.6) {
+                    this.radius = player.radius * (0.5 + Math.random() * 0.4); // 小鱼
+                    this.color = '#34d399';
+                    this.speed = 2 + Math.random() * 2;
+                } else if (sizeRand < 0.9) {
+                    this.radius = player.radius * (1.1 + Math.random() * 0.5); // 中鱼
+                    this.color = '#60a5fa';
+                    this.speed = 1.5 + Math.random() * 1.5;
+                } else {
+                    this.radius = player.radius * (1.8 + Math.random() * 1.0); // 大鱼
+                    this.color = '#f87171';
+                    this.speed = 1 + Math.random() * 1;
+                }
+
+                if (side === 0) { // 左
+                    this.x = -this.radius * 2;
+                    this.y = Math.random() * canvas.height;
+                    this.vx = this.speed;
+                    this.vy = (Math.random() - 0.5);
+                } else if (side === 1) { // 右
+                    this.x = canvas.width + this.radius * 2;
+                    this.y = Math.random() * canvas.height;
+                    this.vx = -this.speed;
+                    this.vy = (Math.random() - 0.5);
+                } else if (side === 2) { // 上
+                    this.x = Math.random() * canvas.width;
+                    this.y = -this.radius * 2;
+                    this.vx = (Math.random() - 0.5);
+                    this.vy = this.speed;
+                } else { // 下
+                    this.x = Math.random() * canvas.width;
+                    this.y = canvas.height + this.radius * 2;
+                    this.vx = (Math.random() - 0.5);
+                    this.vy = -this.speed;
+                }
+            }
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(Math.atan2(this.vy, this.vx));
+
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, this.radius * 1.5, this.radius, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.beginPath();
+                ctx.moveTo(-this.radius * 1.2, 0);
+                ctx.lineTo(-this.radius * 2, -this.radius);
+                ctx.lineTo(-this.radius * 2, this.radius);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.restore();
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+            isOffscreen() {
+                const margin = this.radius * 5;
+                return (this.x < -margin || this.x > canvas.width + margin || this.y < -margin || this.y > canvas.height + margin);
+            }
+        }
+
+        function drawSpikes() {
+            ctx.fillStyle = '#ef4444';
+            // 上墙
+            for (let i = 0; i < canvas.width; i += SPIKE_SIZE) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i + SPIKE_SIZE / 2, SPIKE_SIZE);
+                ctx.lineTo(i + SPIKE_SIZE, 0);
+                ctx.fill();
+            }
+            // 下墙
+            for (let i = 0; i < canvas.width; i += SPIKE_SIZE) {
+                ctx.beginPath();
+                ctx.moveTo(i, canvas.height);
+                ctx.lineTo(i + SPIKE_SIZE / 2, canvas.height - SPIKE_SIZE);
+                ctx.lineTo(i + SPIKE_SIZE, canvas.height);
+                ctx.fill();
+            }
+            // 左墙
+            for (let i = 0; i < canvas.height; i += SPIKE_SIZE) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(SPIKE_SIZE, i + SPIKE_SIZE / 2);
+                ctx.lineTo(0, i + SPIKE_SIZE);
+                ctx.fill();
+            }
+            // 右墙
+            for (let i = 0; i < canvas.height; i += SPIKE_SIZE) {
+                ctx.beginPath();
+                ctx.moveTo(canvas.width, i);
+                ctx.lineTo(canvas.width - SPIKE_SIZE, i + SPIKE_SIZE / 2);
+                ctx.lineTo(canvas.width, i + SPIKE_SIZE);
+                ctx.fill();
+            }
+        }
+
+        function spawnNPC() {
+            if (npcs.length < 15 && Math.random() < 0.05) {
+                npcs.push(new NPC());
+            }
+        }
+
+        function checkCollisions() {
+            for (let i = npcs.length - 1; i >= 0; i--) {
+                const npc = npcs[i];
+                const dx = player.x - npc.x;
+                const dy = player.y - npc.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < player.radius + npc.radius - 5) {
+                    if (player.radius >= npc.radius) {
+                        // 吃到小鱼
+                        score += Math.floor(npc.radius);
+                        player.grow(npc.radius * 0.1);
+                        npcs.splice(i, 1);
+                        scoreElement.innerText = `得分: ${score}`;
+                    } else {
+                        // 撞到大鱼
+                        gameOver("你被大鱼吃掉了！");
+                    }
+                }
+            }
+        }
+
+        function gameOver(msg) {
+            gameActive = false;
+            statusText.innerText = msg;
+            finalScoreText.innerText = `您的最终得分: ${score}`;
+            overlay.style.display = 'flex';
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('bigFishHighScore', highScore);
+                highScoreElement.innerText = `最高分: ${highScore}`;
+            }
+        }
+
+        function resetGame() {
+            score = 0;
+            scoreElement.innerText = `得分: 0`;
+            player.reset();
+            npcs = [];
+            gameActive = true;
+            overlay.style.display = 'none';
+        }
+
+        // 监听输入
+        window.addEventListener('keydown', e => keys[e.code] = true);
+        window.addEventListener('keyup', e => keys[e.code] = false);
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+            mouse.active = true;
+        });
+        canvas.addEventListener('mouseleave', () => mouse.active = false);
+
+        player = new Player();
+
+        function loop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            drawSpikes();
+
+            if (gameActive) {
+                player.update();
+                spawnNPC();
+                npcs.forEach((npc, index) => {
+                    npc.update();
+                    npc.draw();
+                    if (npc.isOffscreen()) {
+                        npcs.splice(index, 1);
+                    }
+                });
+                checkCollisions();
+            } else {
+                npcs.forEach(npc => npc.draw());
+            }
+
+            player.draw();
+
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
